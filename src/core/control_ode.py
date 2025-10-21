@@ -45,7 +45,7 @@ class ControlODE:
         from torchdiffeq import odeint
 
         def ode_func(t, x):
-            return self.system(x, params, t, self.policy)
+            return self.system(x, params, t, self.policy, self.config.input_type)
         
         return odeint(ode_func, self.u0, self.tsteps)
     
