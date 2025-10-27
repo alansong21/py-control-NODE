@@ -7,9 +7,9 @@ class NeuralPolicy(nn.Module):
      
     def __init__(
         self,
-        input_dim: int,
+        input_dim: list[int],  # input curr state + goal state
         hidden_dims: Tuple[int, ...] = (12, 12),
-        output_dim: int = 1,
+        output_dim: int = 1,  # dynamics output: , control output: int
         activation: str = "tanh",
         control_bounds: Optional[Tuple[float, float]] = None
     ):
@@ -52,7 +52,12 @@ class NeuralPolicy(nn.Module):
             # Use provided parameters instead of learned parameters
             return self._forward_with_params(x, params)
         
-        output = self.network(x)
+        A = torch.tensor([[0,1,0],[0,0,1],[0,0,0]])
+        B = torch.tensor([[0,0,1]])
+        u = torch.tensor([0,0,self.network(x)])
+        
+        # output = self.network(x)
+        output = A @ x + B @ u
 
         # Apply control constraints if provided
         if self.control_bounds is not None:
