@@ -4,6 +4,11 @@ from torch.nn.utils import clip_grad_norm_
 from typing import Dict, Any, Tuple, Callable
 from dataclasses import dataclass
 
+try:
+    from tqdm.auto import trange
+except ImportError:  # pragma: no cover - optional dependency
+    trange = None
+
 @dataclass
 class BarrierConfig:
     """Configuration for barrier method"""
@@ -72,7 +77,15 @@ class BarrierMethod:
         delta_progression = [delta]
         last_iteration = 0
 
-        for iteration in range(self.config.max_iterations):
+        show_progress = bool(optimizer_config.get("show_progress", False) and trange is not None)
+        outer_desc = optimizer_config.get("outer_progress_desc", "Barrier iterations")
+        outer_iterator = (
+            trange(self.config.max_iterations, desc=outer_desc)
+            if show_progress
+            else range(self.config.max_iterations)
+        )
+
+        for iteration in outer_iterator:
             last_iteration = iteration
             # Tune barrier parameters
             alpha, delta = self.tune_barrier_parameters(
@@ -91,9 +104,15 @@ class BarrierMethod:
             alpha_progression.append(alpha)
             delta_progression.append(delta)
 
+            if show_progress:
+                outer_iterator.set_postfix(alpha=alpha, delta=delta)
+
             # Check convergence
             if self._check_convergence(alpha_progression, delta_progression):
                 break
+
+        if show_progress:
+            outer_iterator.close()
         
         return params, {
             'alpha_progression': alpha_progression,
@@ -115,13 +134,20 @@ class BarrierMethod:
         grad_clip = config.get("grad_clip")
 
         theta = torch.nn.Parameter(params.detach().clone())
+        show_progress = bool(config.get("show_progress", False) and trange is not None)
+        inner_desc = config.get("progress_desc", "Inner optimization")
+        iterator = (
+            trange(steps, desc=inner_desc, leave=False)
+            if show_progress
+            else range(steps)
+        )
 
         if optimizer_name == "sgd":
             optimizer = optim.SGD([theta], lr=lr)
         else:
             optimizer = optim.Adam([theta], lr=lr, betas=betas)
 
-        for _ in range(steps):
+        for _ in iterator:
             optimizer.zero_grad()
             loss = loss_fn(theta)
             if not torch.isfinite(loss):
@@ -130,6 +156,11 @@ class BarrierMethod:
             if grad_clip is not None:
                 clip_grad_norm_([theta], grad_clip)
             optimizer.step()
+            if show_progress:
+                iterator.set_postfix(loss=float(loss.detach()))
+
+        if show_progress:
+            iterator.close()
 
         return theta.detach()
     
