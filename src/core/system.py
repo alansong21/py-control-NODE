@@ -10,7 +10,7 @@ class TripleIntegrator:
     def __call__(
             self,
             x: torch.Tensor,
-            params: torch.Tensor,
+            params: Optional[torch.Tensor],
             t: torch.Tensor,
             controller: torch.nn.Module,
             input_type: str = "state"
@@ -26,11 +26,16 @@ class TripleIntegrator:
 
         # Get control input from neural policy
         if input_type == "state":
-            u = controller(x, params)[0] # Control based on state
+            policy_input = x
         elif input_type == "time":
-            u = controller(t, params)[0] # Control based on time
+            policy_input = torch.as_tensor(
+                [t], dtype=x.dtype, device=x.device
+            )   # treat time as 1D input
         else:
             raise ValueError(f"Unknown input_type: {input_type}")
+        
+        control = controller(policy_input, params) if params is not None else controller(policy_input)
+        u = control[0]
     
         # Dynamics: x' = v, v' = a, a' = u
         dxdt = torch.stack([vel, acc, u])
