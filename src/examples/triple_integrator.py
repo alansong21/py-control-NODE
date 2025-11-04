@@ -6,16 +6,18 @@ from typing import Any, Callable, Dict, Iterable, Tuple
 import torch
 import matplotlib.pyplot as plt
 
+
 try:
     from tqdm.auto import trange
 except ImportError:  # pragma: no cover - optional dependency
     trange = None
 
-from ..core.policy import NeuralPolicy
-from ..core.control_ode import ControlODE, ControlODEConfig
-from ..core.system import TripleIntegrator
-from ..utils.core_functions import ConstrainedCost
-from ..optimization.barriers import BarrierMethod, BarrierConfig
+from src.core.policy import NeuralPolicy
+from src.core.control_ode import ControlODE, ControlODEConfig
+from src.core.system import TripleIntegrator
+from src.utils.core_functions import ConstrainedCost
+from src.optimization.barriers import BarrierMethod, BarrierConfig
+from src.ruckig_generator import ruckig_generator
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "triple_integrator.json"
 
@@ -46,6 +48,20 @@ def objective_from_trajectory(
     velocity_cost = weights.get("velocity", 1e-3) * trajectory[:, 1] ** 2
     acceleration_cost = weights.get("acceleration", 1e-3) * trajectory[:, 2] ** 2
     return dt * torch.sum(position_cost + velocity_cost + acceleration_cost)
+
+def objective_from_control_error(
+        trajectory: torch.Tensor,  
+        dt: float,
+        ground_truth: torch.Tensor ) -> torch.Tensor:
+    
+    trajectory_jerk = trajectory[:, 3]
+    ground_truth_jerk = ground_truth[:, 4]
+    
+    print("traj shape", trajectory_jerk.shape)  # 251 right now
+    print("ground_truth shape", ground_truth_jerk.shape)  # 280 right now
+    
+    
+    return dt * (trajectory_jerk - ground_truth_jerk) ** 2
 
 # Optimizes a given cost function without state or control constraints, using Adam
 # Returns parameters that minimize the cost function without constraints
@@ -80,7 +96,7 @@ def optimize_unconstrained(
     return theta.detach()
 
 # Main triple integrator policy training loop
-def run_triple_integrator(config: Dict[str, Any]) -> Dict[str, Any]:
+def run_triple_integrator(config: Dict[str, Any], ground_truth_traj) -> Dict[str, Any]:
     # Get configs
     system_cfg = config.get("system", {})
     policy_cfg = config.get("policy", {})
@@ -132,7 +148,13 @@ def run_triple_integrator(config: Dict[str, Any]) -> Dict[str, Any]:
     # Compute the cost given a set of parameters
     def unconstrained_loss(params: torch.Tensor) -> torch.Tensor:
         trajectory = ode.solve(params)
-        return objective_from_trajectory(trajectory, objective_weights, dt)
+        controls = ode.policy(trajectory, params)
+        
+        trajectory_extended = torch.cat((trajectory, controls), dim=1)
+        # print("traj shape:", trajectory.shape)
+        
+        # return objective_from_trajectory(trajectory, objective_weights, dt, ground_truth_traj)
+        return objective_from_control_error(trajectory_extended, dt, ground_truth_traj)
 
     # First, seed parameters by optimizing without constraints
     base_params = policy.get_parameter_vector()
@@ -165,7 +187,8 @@ def run_triple_integrator(config: Dict[str, Any]) -> Dict[str, Any]:
     # Initialize constrained cost and barrier method objects
     constrained_cost = ConstrainedCost(
         ode,
-        objective_fn=lambda traj: objective_from_trajectory(traj, objective_weights, dt),
+        # objective_fn=lambda traj: objective_from_trajectory(traj, objective_weights, dt, ground_truth_traj),
+        objective_fn=lambda traj: objective_from_control_error(traj, dt, ground_truth_traj),
         constraints=constraints,
         config={"alpha": barrier_alpha0, "delta": barrier_delta0, "rho": rho},
     )
@@ -258,7 +281,20 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     config = load_config(args.config)
-    results = run_triple_integrator(config)
+    
+    rg = ruckig_generator(config)
+    inp = rg.build_ruckig_input()
+    
+    # Run Ruckig
+    traj, t = rg.run_ruckig(inp)
+    
+    traj = torch.tensor(traj)
+
+    print("traj:\n", traj)
+    print()
+    
+    results = run_triple_integrator(config, traj)
+    
     print("Barrier iterations:", results["training_history"]["iterations"])
     if not args.skip_plot:
         plot_trajectory(results["ode"], results["constrained_params"], config)
